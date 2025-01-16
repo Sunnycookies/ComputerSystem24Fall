@@ -1,0 +1,170 @@
+#!/usr/bin/python3
+
+import os
+import subprocess
+import shutil
+import re
+import json
+import sys
+
+def parse_pcap_to_text(pcap_file, output_text_file):
+    """
+    使用 tcpdump 将 pcap 文件解析成文本文件。
+    :param pcap_file: 输入的 pcap 文件路径
+    :param output_text_file: 输出解析的文本文件路径
+    """
+    try:
+        with open(output_text_file, "w") as f:
+            subprocess.run(f"tcpdump -r {pcap_file}", shell=True, check=True, stdout=f, stderr=subprocess.DEVNULL)
+        # print(f"Parsed {pcap_file} to {output_text_file}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error parsing {pcap_file}: {e}")
+        raise
+
+
+def extract_ack_values(text_file):
+    """
+    从解析的文本文件中提取 ack 字段的值。
+    :param text_file: 输入的解析文本文件路径
+    :return: 提取的 ack 值的列表（按顺序）。
+    """
+    ack_values = []
+    ack_regex = re.compile(r"ack (\d+)")
+
+    with open(text_file, "r") as f:
+        lineno = 0
+        for line in f:
+            lineno += 1
+            if lineno == 1:
+                continue
+            ack_match = ack_regex.search(line)
+            # 提取 ack 并加入列表
+            if ack_match:
+                ack_values.append(f"{ack_match.group(1)}")
+
+    return ack_values
+
+
+def compare_ack_values(values1, values2):
+    """
+    比较两个 seq 和 ack 值列表，判断是否完全一致。
+    :param values1: 第一个文件的 ack 值列表
+    :param values2: 第二个文件的 ack 值列表
+    :return: True (一致), False (不一致)
+    """
+    # print(values1)
+    # print()
+    # print(values2)
+    # print()
+    return values1 == values2
+
+
+def main():
+    # 检查命令行参数
+    if len(sys.argv) != 3:
+        print("用法: ./run_fct_test <ns-3.38目录的绝对路径> <test目录的绝对路径>")
+        sys.exit(1)
+    
+    # 获取命令行参数
+    ns3_path = sys.argv[1]
+    test_path = sys.argv[2]
+
+    # 检查路径是否存在
+    if not os.path.isdir(ns3_path):
+        print(f"错误: ns-3.38 路径不存在: {ns3_path}")
+        sys.exit(1)
+    if not os.path.isdir(test_path):
+        print(f"错误: test 目录路径不存在: {test_path}")
+        sys.exit(1)
+
+    # 读取 JSON 数据
+    json_file = os.path.join(test_path, "pcap-test", "test_cases.json")
+    with open(json_file, "r") as file:
+        data = json.load(file)
+
+    num_case = len(data)
+    num_case_correct = 0
+    
+    # 切换到 ../.. 目录
+    os.chdir(ns3_path)
+
+    # 遍历 JSON 数据中的每一组 flow_size_0 和 flow_size_1
+    for i, flow in enumerate(data):
+        flow_size_0 = flow["flow_size_0"]
+        flow_size_1 = flow["flow_size_1"]
+
+        # 拼接命令
+        command = f'./ns3 run \"dumbbell --flowSize0={flow_size_0} --flowSize1={flow_size_1}\"'
+        print(f"Running command: {command}")
+
+        # 执行命令
+        try:
+            subprocess.run(command, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Command failed with return code {e.returncode}")
+            continue
+
+        source_dir = os.path.join(ns3_path, "lv1-results", "pcap")
+
+        # 检查源目录是否存在
+        if not os.path.exists(source_dir):
+            print(f"Error: Source directory '{source_dir}' does not exist.")
+            sys.exit(1)
+
+        # 定义需要比较的文件
+        files_to_compare = ["-0-1.pcap", "-0-2.pcap"]
+
+        correct_cnt = 0
+
+        # 遍历源目录下的所有文件
+        for filename in files_to_compare:
+            # 构造完整的源文件路径
+            generated_file = os.path.join(ns3_path, "lv1-results", "pcap", f"lv1{filename}")
+
+            # 确保当前项是文件
+            if not os.path.isfile(generated_file):
+                print(f"Skipped non-file item: {generated_file}")
+                continue
+
+            # 构造标准答案文件路径
+            std_file = os.path.join(test_path, "pcap-test", f"std_case{i+1}{filename}")
+
+            # 检查标准答案文件是否存在
+            if not os.path.isfile(std_file):
+                print(f"Error: Standard file '{std_file}' does not exist.")
+                continue
+
+            # 将源文件和标准文件分别解析为文本
+            generated_text_file = os.path.join(test_path, "pcap-test", "student.txt")
+            standard_text_file = os.path.join(test_path, "pcap-test", "standard.txt")
+
+            try:
+                parse_pcap_to_text(generated_file, generated_text_file)
+                parse_pcap_to_text(std_file, standard_text_file)
+            except Exception as e:
+                print(f"Error during pcap parsing for {generated_file} or {std_file}: {e}")
+                continue
+
+            # 提取 ack 值
+            source_values = extract_ack_values(generated_text_file)
+            standard_values = extract_ack_values(standard_text_file)
+
+            # 删除临时文本文件
+            os.remove(generated_text_file)
+            os.remove(standard_text_file)
+
+            # 比较 ack 值
+            if compare_ack_values(source_values, standard_values) == False:
+                print(f"错误！比较 {generated_file} 与 {std_file} 时发现不一致")
+                break
+            
+            correct_cnt += 1
+
+        if correct_cnt == 2:
+            print(f"Case {i+1} 正确！")
+            num_case_correct += 1
+
+    print(f"pcap-test：通过 {num_case_correct} 个 case，一共 {num_case} 个 case ")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+
+import json
+import os
+import subprocess
+import shutil
+import sys
+
+# 自定义函数：比对文件内容，判断相差是否在5%以内
+def compare_files_with_tolerance(file1, file2, tolerance=0.05, abs_tolerance=1000000):
+    """
+    比较两个文件的内容，检查每行对应数字是否相差在5%以内。
+    :param file1: 第一个文件路径
+    :param file2: 第二个文件路径（标准答案）
+    :param tolerance: 允许的误差范围（默认值为 5%）
+    :return: True (匹配) 或 False (不匹配)
+    """
+    try:
+        with open(file1, 'r') as f1, open(file2, 'r') as f2:
+            # 逐行读取文件内容
+            lines1 = f1.readlines()
+            lines2 = f2.readlines()
+
+            # 检查两文件行数是否一致
+            if len(lines1) != len(lines2):
+                print(f"File {file1} and {file2} have different number of lines!")
+                return False
+
+            # 对每一行的数字进行比对
+            for line1, line2 in zip(lines1, lines2):
+                num1 = float(line1.strip())
+                num2 = float(line2.strip())
+
+                # 检查差值是否在允许范围内
+                # 如果误差在 5% 以内或者相差在 1秒 以内，则认为在误差允许范围内
+                if abs(num1 - num2) > tolerance * num2 and abs(num1 - num2) > abs_tolerance:
+                    print(f"Result out of acceptable range: |{num1} - {num2}| > {tolerance} * {num2} and abs({num1} - {num2}) > {abs_tolerance}")
+                    return False
+        return True
+    except Exception as e:
+        print(f"Error comparing files {file1} and {file2}: {e}")
+        return False
+
+def main():
+    # 检查命令行参数
+    if len(sys.argv) != 3:
+        print("用法: ./run_fct_test <ns-3.38目录的绝对路径> <test目录的绝对路径>")
+        sys.exit(1)
+
+    # 获取命令行参数
+    ns3_path = sys.argv[1]
+    test_path = sys.argv[2]
+
+    # 检查路径是否存在
+    if not os.path.isdir(ns3_path):
+        print(f"错误: ns-3.38 路径不存在: {ns3_path}")
+        sys.exit(1)
+    if not os.path.isdir(test_path):
+        print(f"错误: test 目录路径不存在: {test_path}")
+        sys.exit(1)
+
+    # 读取 JSON 数据
+    json_file = os.path.join(test_path, "fct-test", "test_cases.json")
+    with open(json_file, "r") as file:
+        data = json.load(file)
+
+    num_case = len(data)
+    num_case_correct = 0
+
+    # 切换到 ../.. 目录
+    os.chdir(ns3_path)
+
+    # 遍历 JSON 数据中的每一组 flow_size_0 和 flow_size_1
+    for i, flow in enumerate(data):
+        flow_size_0 = flow["flow_size_0"]
+        flow_size_1 = flow["flow_size_1"]
+
+        # 拼接命令
+        command = f'./ns3 run \"dumbbell --flowSize0={flow_size_0} --flowSize1={flow_size_1}\"'
+        print(f"Running command: {command}")
+
+        # 执行命令
+        try:
+            subprocess.run(command, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Command failed with return code {e.returncode}")
+            continue
+
+        # 定义文件路径
+        generated_file = os.path.join(ns3_path, "lv1-results", "fct", "fct.dat")
+        std_file = os.path.join(test_path, "fct-test", f"std_case{i+1}.dat")
+
+        # 比对文件内容（相差不超过 5%）
+        if os.path.exists(generated_file) and os.path.exists(std_file):
+            if compare_files_with_tolerance(generated_file, std_file, 0.05):
+                print(f"Case {i+1}: 正确！")
+                num_case_correct += 1
+            else:
+                print(f"Case {i+1}: 错误！")
+        else:
+            print(f"Case {i+1}: 错误！找不到文件")
+
+    print(f"fct-test：通过 {num_case_correct} 个 case，一共 {num_case} 个 case ")
+
+if __name__ == "__main__":
+    main()

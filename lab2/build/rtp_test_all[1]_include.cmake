@@ -1,0 +1,5 @@
+if(EXISTS "/home/student/workspace/code/lab2/build/rtp_test_all[1]_tests.cmake")
+  include("/home/student/workspace/code/lab2/build/rtp_test_all[1]_tests.cmake")
+else()
+  add_test(rtp_test_all_NOT_BUILT rtp_test_all_NOT_BUILT)
+endif()

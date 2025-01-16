@@ -1,0 +1,189 @@
+#!/usr/bin/python3
+
+import json
+import os
+import subprocess
+import shutil
+import sys
+
+def parse_file(file_path):
+    """
+    解析给定文件，提取统计量（最大值、最大值出现的最早时间戳）
+    :param file_path: 文件路径
+    :return: 一个字典，包含统计量 {max_cwnd, max_cwnd_timestamp}
+    """
+    timestamps = []
+    old_cwnds = []
+    new_cwnds = []
+
+    # 逐行读取文件，解析内容
+    with open(file_path, 'r') as file:
+        for line in file:
+            parts = line.strip().split()
+            assert (len(parts) == 3)
+            timestamp, old_cwnd, new_cwnd = map(int, parts)
+            timestamps.append(timestamp)
+            old_cwnds.append(old_cwnd)
+            new_cwnds.append(new_cwnd)
+
+    # 计算统计量
+    if not new_cwnds:
+        raise ValueError(f"文件 {file_path} 中没有有效数据！")
+
+    max_cwnd = max(new_cwnds)
+    max_cwnd_idx = new_cwnds.index(max_cwnd)
+    max_cwnd_timestamp = timestamps[max_cwnd_idx]
+
+    return {
+        "max_cwnd": max_cwnd,
+        "max_cwnd_timestamp": max_cwnd_timestamp
+    }
+
+def compare_metrics(file1_metrics, file2_metrics, tolerance=0.10):
+    """
+    比较两个文件的统计量，判断是否在容差范围内
+    :param file1_metrics: 第一个文件的统计量
+    :param file2_metrics: 第二个文件的统计量
+    :param tolerance: 容差比例（默认 10%）
+    :return: 比较结果（布尔值），以及差异信息
+    """
+    results = {}
+    for key in file1_metrics:
+        value1 = float(file1_metrics[key])
+        value2 = float(file2_metrics[key])
+
+        # 计算相对误差
+        diff = abs(value1 - value2)
+        allowed_diff = tolerance * value2
+
+        # 检查是否在容差范围内
+        results[key] = diff <= allowed_diff
+
+    # 检查整体结果
+    all_match = all(results.values())
+
+    return all_match, results
+
+# 自定义函数：比对文件内容，判断相差是否在5%以内
+def compare_cwnd_files(file1, file2):
+    """
+    比较两个文件的内容，检查每行对应数字是否相差在5%以内。
+    :param file1: 第一个文件路径
+    :param file2: 第二个文件路径（标准答案）
+    :param tolerance: 允许的误差范围（默认值为 5%）
+    :return: True (匹配) 或 False (不匹配)
+    """
+    try:
+        # 解析两个文件的统计量
+        metrics1 = parse_file(file1)
+        metrics2 = parse_file(file2)
+
+        # print(f"文件 {file1} 的统计量：{metrics1}")
+        # print(f"文件 {file2} 的统计量：{metrics2}")
+
+        # 比较两个文件的统计量
+        match, results = compare_metrics(metrics1, metrics2)
+
+        if match:
+            return True
+        else:
+            print("两个文件不一致！具体差异如下：")
+            for key, is_match in results.items():
+                status = "一致" if is_match else "不一致"
+                print(f"  {key}：{status}（文件1={metrics1[key]}, 文件2={metrics2[key]}）")
+            return False
+
+    except Exception as e:
+        print(f"发生错误：{e}")
+        return False
+
+def main():
+    # 检查命令行参数
+    if len(sys.argv) != 3:
+        print("用法: ./run_cwnd_test <ns-3.38目录的绝对路径> <test目录的绝对路径>")
+        sys.exit(1)
+
+    # 获取命令行参数
+    ns3_path = sys.argv[1]
+    test_path = sys.argv[2]
+
+    # 检查路径是否存在
+    if not os.path.isdir(ns3_path):
+        print(f"错误: ns-3.38 路径不存在: {ns3_path}")
+        sys.exit(1)
+    if not os.path.isdir(test_path):
+        print(f"错误: test 目录路径不存在: {test_path}")
+        sys.exit(1)
+
+    # 读取 JSON 数据
+    json_file = os.path.join(test_path, "cwnd-test", "test_cases.json")
+    with open(json_file, "r") as file:
+        data = json.load(file)
+
+    num_case = len(data)
+    num_case_correct = 0
+
+    # 切换到 ../.. 目录
+    os.chdir(ns3_path)
+
+    # 遍历 JSON 数据中的每一组 flow_size_0 和 flow_size_1
+    for i, flow in enumerate(data):
+        flow_size_0 = flow["flow_size_0"]
+        flow_size_1 = flow["flow_size_1"]
+
+        # 拼接命令
+        command = f'./ns3 run \"dumbbell --flowSize0={flow_size_0} --flowSize1={flow_size_1}\"'
+        print(f"Running command: {command}")
+
+        # 执行命令
+        try:
+            subprocess.run(command, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Command failed with return code {e.returncode}")
+            continue
+
+        source_dir = os.path.join(ns3_path, "lv1-results", "cwnd")
+
+        # 检查源目录是否存在
+        if not os.path.exists(source_dir):
+            print(f"Error: Source directory '{source_dir}' does not exist.")
+            sys.exit(1)
+
+        # 定义需要比较的文件
+        files_to_compare = ["n2.dat", "n3.dat"]
+
+        correct_cnt = 0
+
+        # 遍历源目录下的所有文件
+        for filename in files_to_compare:
+            # 构造完整的源文件路径
+            generated_file = os.path.join(ns3_path, "lv1-results", "cwnd", filename)
+
+            # 确保当前项是文件
+            if not os.path.isfile(generated_file):
+                print(f"Skipped non-file item: {generated_file}")
+                continue
+
+            # 构造标准答案文件路径
+            std_file = os.path.join(test_path, "cwnd-test", f"std_case{i+1}_{filename}")
+
+            # 检查标准答案文件是否存在
+            if not os.path.isfile(std_file):
+                print(f"Error: Standard file '{std_file}' does not exist.")
+                continue
+
+            # 比对文件内容（相差不超过 5%）
+            if compare_cwnd_files(generated_file, std_file):
+                correct_cnt += 1
+            else:
+                print(f"错误！比较 {generated_file} 与 {std_file} 时发现不一致")
+                break
+
+        if correct_cnt == 2:
+            print(f"Case {i+1} 正确！")
+            num_case_correct += 1
+
+    print(f"cwnd-test：通过 {num_case_correct} 个 case，一共 {num_case} 个 case ")
+
+if __name__ == "__main__":
+    main()

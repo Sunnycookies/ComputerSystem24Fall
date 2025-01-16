@@ -1,0 +1,4 @@
+/home/student/workspace/code/lab1/build/CMakeFiles/ftp_server.dir
+/home/student/workspace/code/lab1/build/CMakeFiles/ftp_client.dir
+/home/student/workspace/code/lab1/build/CMakeFiles/edit_cache.dir
+/home/student/workspace/code/lab1/build/CMakeFiles/rebuild_cache.dir
